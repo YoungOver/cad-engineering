@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="ru"><head><meta charset="utf-8"><title>Узел вала — рендер</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Onest:wght@400;600;800&family=JetBrains+Mono:wght@500;700&display=swap');
+*{box-sizing:border-box;margin:0}
+html,body{width:100%;height:100%;overflow:hidden}
+body{background:var(--bg);font-family:Onest,sans-serif;color:#e8edf3}
+body.dark{--bg:radial-gradient(ellipse 80% 70% at 50% 42%,#2b3440 0%,#171c23 55%,#0e1116 100%)}
+body.light{--bg:radial-gradient(ellipse 80% 70% at 50% 40%,#ffffff 0%,#e9ecef 60%,#d9dde2 100%);color:#1a1f26}
+canvas{display:block;position:absolute;inset:0}
+svg#ov{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
+.bl circle{fill:#11161c;stroke:#f2b23a;stroke-width:2}
+.light .bl circle{fill:#fff;stroke:#1d2733}
+.bl text{font:700 17px 'JetBrains Mono',monospace;fill:#fff;text-anchor:middle;dominant-baseline:central}
+.light .bl text{fill:#1d2733}
+.bl line{stroke:#f2b23a;stroke-width:1.4}
+.light .bl line{stroke:#1d2733}
+.bl .dot{fill:#f2b23a;stroke:none}
+.light .bl .dot{fill:#1d2733}
+</style>
+<script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.169.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.169.0/examples/jsm/"}}</script>
+</head><body>
+<svg id="ov"></svg>
+<script type="module">
+import * as THREE from 'three'
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js'
+
+const q = new URLSearchParams(location.search)
+const mode = q.get('mode') || 'asm'           // asm | exp
+const theme = q.get('bg') || 'dark'
+const balloons = q.get('balloons') !== '0' && mode === 'exp'
+const camDir = (q.get('cam') || (mode === 'exp' ? '0.55,-1,0.42' : '1.05,-1.25,0.72')).split(',').map(Number)
+const fitK = +(q.get('fit') || 1.0)
+const shiftX = +(q.get('sx') || 0), shiftY = +(q.get('sy') || 0)
+const fov = +(q.get('fov') || 20)
+document.body.className = theme
+
+const W = innerWidth, H = innerHeight
+const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, preserveDrawingBuffer: true })
+renderer.setPixelRatio(devicePixelRatio)
+renderer.setSize(W, H)
+renderer.toneMapping = THREE.ACESFilmicToneMapping
+renderer.toneMappingExposure = theme === 'dark' ? 1.05 : 0.95
+renderer.shadowMap.enabled = true
+renderer.shadowMap.type = THREE.PCFSoftShadowMap
+document.body.prepend(renderer.domElement)
+
+const scene = new THREE.Scene()
+const pmrem = new THREE.PMREMGenerator(renderer)
+scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture
+scene.environmentIntensity = 0.9
+
+const M = {
+  paint: new THREE.MeshStandardMaterial({ color: 0x3f556b, metalness: 0.35, roughness: 0.58 }),
+  machined: new THREE.MeshStandardMaterial({ color: 0xc4c9cf, metalness: 1, roughness: 0.32 }),
+  steel: new THREE.MeshStandardMaterial({ color: 0xd3d6da, metalness: 1, roughness: 0.26 }),
+  steel2: new THREE.MeshStandardMaterial({ color: 0xb9bcc0, metalness: 1, roughness: 0.4 }),
+  black: new THREE.MeshStandardMaterial({ color: 0x2c2d31, metalness: 0.75, roughness: 0.42 }),
+  chrome: new THREE.MeshStandardMaterial({ color: 0xe8eaec, metalness: 1, roughness: 0.14 }),
+  rubber: new THREE.MeshStandardMaterial({ color: 0x1a1a1a, metalness: 0, roughness: 0.85 }),
+}
+for (const m of Object.values(M)) { m.polygonOffset = true; m.polygonOffsetFactor = 1; m.polygonOffsetUnits = 1 }
+const edgeMat = new THREE.LineBasicMaterial({ color: 0x07090c, transparent: true, opacity: 0.5 })
+const edgeMatDark = new THREE.LineBasicMaterial({ color: 0x9aa3ad, transparent: true, opacity: 0.35 })
+
+const dec = (s, T) => { const b = Uint8Array.from(atob(s), (c) => c.charCodeAt(0)); return new T(b.buffer) }
+const data = await (await fetch('render_data.json')).json()
+const root = new THREE.Group(); scene.add(root)
+const box = new THREE.Box3()
+const items = []
+for (const d of data) {
+  const g = new THREE.BufferGeometry()
+  g.setAttribute('position', new THREE.BufferAttribute(dec(d.v, Float32Array), 3))
+  const t = dec(d.t, Uint32Array), t2 = dec(d.t2, Uint32Array)
+  const idx = new Uint32Array(t.length + t2.length); idx.set(t); idx.set(t2, t.length)
+  g.setIndex(new THREE.BufferAttribute(idx, 1))
+  g.addGroup(0, t.length, 0); if (t2.length) g.addGroup(t.length, t2.length, 1)
+  g.computeVertexNormals()
+  const mesh = new THREE.Mesh(g, [M[d.mat], M.machined])
+  mesh.castShadow = true; mesh.receiveShadow = true
+  const grp = new THREE.Group(); grp.add(mesh)
+  const eg = new THREE.BufferGeometry(); eg.setAttribute('position', new THREE.BufferAttribute(dec(d.e, Float32Array), 3))
+  grp.add(new THREE.LineSegments(eg, d.mat === 'black' || d.mat === 'rubber' ? edgeMatDark : edgeMat))
+  if (mode === 'exp') grp.position.set(...d.explode)
+  root.add(grp)
+  items.push({ d, grp })
+  const bb = new THREE.Box3(new THREE.Vector3(...d.bb.slice(0, 3)), new THREE.Vector3(...d.bb.slice(3))).translate(grp.position)
+  box.union(bb)
+}
+
+// монтажные оси (разнесённый вид)
+if (mode === 'exp') {
+  const lm = new THREE.LineDashedMaterial({ color: theme === 'dark' ? 0x8fa3b8 : 0x5b6b7c, dashSize: 6, gapSize: 4, transparent: true, opacity: 0.55 })
+  const seg = (a, b) => { const g = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(...a), new THREE.Vector3(...b)]); const l = new THREE.Line(g, lm); l.computeLineDistances(); root.add(l) }
+  seg([-300, 0, 0], [300, 0, 0]); seg([-130, 0, 150], [385, 0, 150]); seg([0, 0, 50], [0, 0, 128]); seg([84, 0, 166], [84, 0, 185])
+  for (const a of [90, 150, 210, 270, 330, 30]) {
+    const y = 42 * Math.cos(a * Math.PI / 180), z = 42 * Math.sin(a * Math.PI / 180)
+    seg([-275, y, z], [-62, y, z]); seg([62, y, z], [275, y, z])
+  }
+}
+
+// пол + свет
+const floorZ = -85
+const shadowMat = new THREE.ShadowMaterial({ opacity: theme === 'dark' ? 0.45 : 0.22 })
+const floor = new THREE.Mesh(new THREE.PlaneGeometry(3000, 3000), shadowMat)
+floor.position.z = floorZ - 0.05; floor.receiveShadow = true; scene.add(floor)
+const key = new THREE.DirectionalLight(0xffffff, 2.4)
+key.position.set(-260, -420, 700); key.castShadow = true
+key.shadow.mapSize.set(2048, 2048)
+Object.assign(key.shadow.camera, { left: -500, right: 500, top: 500, bottom: -500, near: 10, far: 2000 })
+key.shadow.bias = -0.0004; key.shadow.radius = 5
+scene.add(key)
+const rim = new THREE.DirectionalLight(0xbcd4ff, 1.2); rim.position.set(500, 400, 300); scene.add(rim)
+scene.add(new THREE.HemisphereLight(0xdfe8f2, 0x20242a, 0.5))
+
+// камера: подгон по габариту
+const camera = new THREE.PerspectiveCamera(fov, W / H, 1, 10000)
+camera.up.set(0, 0, 1)
+const c = box.getCenter(new THREE.Vector3()), sz = box.getSize(new THREE.Vector3())
+const r = sz.length() / 2
+const dir = new THREE.Vector3(...camDir).normalize()
+const dist = r / Math.sin(THREE.MathUtils.degToRad(fov / 2)) * 0.62 * fitK
+camera.position.copy(c).addScaledVector(dir, dist)
+camera.lookAt(c)
+camera.updateMatrixWorld()
+// сдвиг кадра (в долях экрана)
+camera.setViewOffset(W, H, -shiftX * W, -shiftY * H, W, H)
+renderer.render(scene, camera)
+
+// выноски с номерами позиций
+if (balloons) {
+  const proj = (p) => { const v = new THREE.Vector3(...p).project(camera); return [(v.x + 1) / 2 * W, (1 - v.y) / 2 * H] }
+  const pick = (pos, f = () => true) => items.find((it) => it.d.pos === pos && f(it.d))
+  const at = (it, local) => local.map((v, i) => v + it.d.explode[i])
+  const A = {
+    1: at(pick(1), [0, -60, -40]),
+    2: at(pick(2), [-10, 0, -18]),
+    3: at(pick(3), [84, 0, -48]),
+    4: at(pick(4), [-56, 0, -30]),
+    5: at(pick(5), [56, -12, -34]),
+    6: at(pick(6), [107, 0, -17]),
+    7: at(pick(7, (d) => d.explode[0] > 0 && d.c[2] < -20 && d.c[1] < 0), [0, 0, 0]),
+    8: at(pick(8), [51, -12, -24]),
+    9: at(pick(9, (d) => d.sub === 'outer' && d.explode[0] < 0), [-32, -20, -24]),
+    10: at(pick(10), [84, 0, 15.5]),
+  }
+  A[7] = at(pick(7, (d) => d.explode[0] > 0 && d.c[2] < -20 && d.c[1] < 0), pick(7, (d) => d.explode[0] > 0 && d.c[2] < -20 && d.c[1] < 0).d.c)
+  // смещения выносок в пикселях (подобраны по кадру)
+  const off = JSON.parse(q.get('off') || 'null') || {
+    1: [-70, 120], 2: [-60, -90], 3: [90, 60], 4: [-50, 110], 5: [30, 120], 6: [60, -80],
+    7: [70, 90], 8: [40, 110], 9: [-80, -70], 10: [0, -90],
+  }
+  const ns = 'http://www.w3.org/2000/svg'
+  const ov = document.getElementById('ov')
+  const R = 17
+  for (const [k, p] of Object.entries(A)) {
+    const [x, y] = proj(p); const [dx, dy] = off[k]; const bx = x + dx, by = y + dy
+    const g = document.createElementNS(ns, 'g'); g.setAttribute('class', 'bl')
+    const L = Math.hypot(dx, dy)
+    g.innerHTML = `<line x1="${x}" y1="${y}" x2="${bx - dx / L * R}" y2="${by - dy / L * R}"/><circle class="dot" cx="${x}" cy="${y}" r="3.2"/><circle cx="${bx}" cy="${by}" r="${R}"/><text x="${bx}" y="${by + 1}">${k}</text>`
+    ov.appendChild(g)
+  }
+}
+await document.fonts.ready
+requestAnimationFrame(() => { document.body.dataset.ready = '1' })
+</script>
+</body></html>
